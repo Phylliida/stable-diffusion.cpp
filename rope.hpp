@@ -60,21 +60,25 @@ namespace Rope {
         for (size_t i = 0; i < pos.size(); ++i) {
             float position = pos[i];
             for (int j = 0; j < half_dim; ++j) {
-                float omega_val = omega[j];
-                int wrap        = (wraps != nullptr) ? (*wraps)[i] : 0;
-                float angle;
+                float omega_val       = omega[j];
+                float original_angle  = position * omega_val;
+                float angle           = original_angle;
+                int wrap              = (wraps != nullptr) ? (*wraps)[i] : 0;
                 if (wrap > 0) {
                     constexpr float TWO_PI = 6.28318530717958647692f;
                     float wrap_f            = static_cast<float>(wrap);
                     float cycles            = omega_val * wrap_f / TWO_PI;
-                    float rounded           = std::round(cycles);  // snap to the nearest integer number of rotations
-                    if (rounded < 1.0f) {
-                        rounded = 1.0f;
+                    float rounded           = std::round(cycles);  // closest periodic harmonic
+                    float periodic_omega    = TWO_PI * rounded / wrap_f;
+                    float periodic_angle    = position * periodic_omega;
+                    float rel_pos           = std::fmod(position, wrap_f);
+                    if (rel_pos < 0.0f) {
+                        rel_pos += wrap_f;
                     }
-                    float adjusted = TWO_PI * rounded / wrap_f;
-                    angle          = position * adjusted;
-                } else {
-                    angle = position * omega_val;
+                    float t       = wrap_f > 0.0f ? rel_pos / wrap_f : 0.0f;
+                    float window  = 0.5f - 0.5f * std::cos(TWO_PI * t);  // 0 at edges, 1 in the middle
+                    window        = std::clamp(window, 0.0f, 1.0f);
+                    angle         = periodic_angle + window * (original_angle - periodic_angle);
                 }
                 float sin_val = std::sin(angle);
                 float cos_val = std::cos(angle);
