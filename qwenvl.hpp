@@ -524,7 +524,7 @@ namespace Qwen {
             auto k = ggml_reshape_4d(ctx, qkv_vec[1], head_dim, num_heads, qkv_vec[1]->ne[1], qkv_vec[1]->ne[2]);  // [N, n_token, n_head, d_head]
             auto v = ggml_reshape_4d(ctx, qkv_vec[2], head_dim, num_heads, qkv_vec[2]->ne[1], qkv_vec[2]->ne[2]);  // [N, n_token, n_head, d_head]
 
-            x = Rope::attention(ctx, backend, q, k, v, pe, mask, false, 1.f, false);  // [N, n_token, hidden_size]
+            x = Rope::attention(ctx, backend, q, k, v, pe, mask, false, 1.f, false, use_circular_pad());  // [N, n_token, hidden_size]
 
             x = proj->forward(ctx, x);  // [N, n_token, hidden_size]
             return x;
@@ -692,7 +692,7 @@ namespace Qwen {
             k = ggml_cont(ctx, ggml_torch_permute(ctx, k, 0, 2, 1, 3));            // [N, num_kv_heads, n_token, head_dim]
             k = ggml_reshape_3d(ctx, k, k->ne[0], k->ne[1], k->ne[2] * k->ne[3]);  // [N*num_kv_heads, n_token, head_dim]
 
-            x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, nullptr, true, true, false);  // [N, n_token, hidden_size]
+            x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, nullptr, true, true, false, 1.0f, use_circular_pad());  // [N, n_token, hidden_size]
 
             x = out_proj->forward(ctx, x);  // [N, n_token, hidden_size]
             return x;

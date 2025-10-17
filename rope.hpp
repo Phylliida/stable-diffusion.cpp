@@ -1,6 +1,8 @@
 #ifndef __ROPE_HPP__
 #define __ROPE_HPP__
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include "ggml_extend.hpp"
 
@@ -39,32 +41,47 @@ namespace Rope {
         return flat_vec;
     }
 
-    __STATIC_INLINE__ std::vector<std::vector<float>> rope(const std::vector<float>& pos, int dim, int theta) {
+    __STATIC_INLINE__ std::vector<std::vector<float>> rope(const std::vector<float>& pos,
+                                                           int dim,
+                                                           int theta,
+                                                           const std::vector<int>* wraps = nullptr) {
         assert(dim % 2 == 0);
         int half_dim = dim / 2;
+
+        std::vector<std::vector<float>> result(pos.size(), std::vector<float>(half_dim * 4));
 
         std::vector<float> scale = linspace(0.f, (dim * 1.f - 2) / dim, half_dim);
 
         std::vector<float> omega(half_dim);
         for (int i = 0; i < half_dim; ++i) {
-            omega[i] = 1.0 / std::pow(theta, scale[i]);
+            omega[i] = 1.0f / std::pow(theta, scale[i]);
         }
 
-        int pos_size = pos.size();
-        std::vector<std::vector<float>> out(pos_size, std::vector<float>(half_dim));
-        for (int i = 0; i < pos_size; ++i) {
+        for (size_t i = 0; i < pos.size(); ++i) {
+            float position = pos[i];
             for (int j = 0; j < half_dim; ++j) {
-                out[i][j] = pos[i] * omega[j];
-            }
-        }
-
-        std::vector<std::vector<float>> result(pos_size, std::vector<float>(half_dim * 4));
-        for (int i = 0; i < pos_size; ++i) {
-            for (int j = 0; j < half_dim; ++j) {
-                result[i][4 * j]     = std::cos(out[i][j]);
-                result[i][4 * j + 1] = -std::sin(out[i][j]);
-                result[i][4 * j + 2] = std::sin(out[i][j]);
-                result[i][4 * j + 3] = std::cos(out[i][j]);
+                float omega_val = omega[j];
+                int wrap        = (wraps != nullptr) ? (*wraps)[i] : 0;
+                float angle;
+                if (wrap > 0) {
+                    constexpr float TWO_PI = 6.28318530717958647692f;
+                    float wrap_f            = static_cast<float>(wrap);
+                    float cycles            = omega_val * wrap_f / TWO_PI;
+                    float rounded           = std::round(cycles);  // snap to the nearest integer number of rotations
+                    if (rounded < 1.0f) {
+                        rounded = 1.0f;
+                    }
+                    float adjusted = TWO_PI * rounded / wrap_f;
+                    angle          = position * adjusted;
+                } else {
+                    angle = position * omega_val;
+                }
+                float sin_val = std::sin(angle);
+                float cos_val = std::cos(angle);
+                result[i][4 * j]     = cos_val;
+                result[i][4 * j + 1] = -sin_val;
+                result[i][4 * j + 2] = sin_val;
+                result[i][4 * j + 3] = cos_val;
             }
         }
 
@@ -122,7 +139,8 @@ namespace Rope {
     __STATIC_INLINE__ std::vector<float> embed_nd(const std::vector<std::vector<float>>& ids,
                                                   int bs,
                                                   int theta,
-                                                  const std::vector<int>& axes_dim) {
+                                                  const std::vector<int>& axes_dim,
+                                                  const std::vector<std::vector<int>>* axes_wraps = nullptr) {
         std::vector<std::vector<float>> trans_ids = transpose(ids);
         size_t pos_len                            = ids.size() / bs;
         int num_axes                              = axes_dim.size();
@@ -137,7 +155,12 @@ namespace Rope {
         std::vector<std::vector<float>> emb(bs * pos_len, std::vector<float>(emb_dim * 2 * 2, 0.0));
         int offset = 0;
         for (int i = 0; i < num_axes; ++i) {
-            std::vector<std::vector<float>> rope_emb = rope(trans_ids[i], axes_dim[i], theta);  // [bs*pos_len, axes_dim[i]/2 * 2 * 2]
+            const std::vector<int>* axis_wrap = nullptr;
+            if (axes_wraps != nullptr && i < (int)axes_wraps->size()) {
+                axis_wrap = &(*axes_wraps)[i];
+            }
+            std::vector<std::vector<float>> rope_emb =
+                rope(trans_ids[i], axes_dim[i], theta, axis_wrap);  // [bs*pos_len, axes_dim[i]/2 * 2 * 2]
             for (int b = 0; b < bs; ++b) {
                 for (int j = 0; j < pos_len; ++j) {
                     for (int k = 0; k < rope_emb[0].size(); ++k) {
@@ -250,9 +273,76 @@ namespace Rope {
                                                            const std::vector<ggml_tensor*>& ref_latents,
                                                            bool increase_ref_index,
                                                            int theta,
-                                                           const std::vector<int>& axes_dim) {
+                                                           const std::vector<int>& axes_dim,
+                                                           bool circular = false) {
         std::vector<std::vector<float>> ids = gen_qwen_image_ids(h, w, patch_size, bs, context_len, ref_latents, increase_ref_index);
-        return embed_nd(ids, bs, theta, axes_dim);
+        std::vector<std::vector<int>> axes_wraps;
+        if (circular && bs > 0 && axes_dim.size() >= 3) {
+            int pad_h = (patch_size - (h % patch_size)) % patch_size;
+            int pad_w = (patch_size - (w % patch_size)) % patch_size;
+            int h_len = (h + pad_h) / patch_size;
+            int w_len = (w + pad_w) / patch_size;
+            if (h_len > 0 && w_len > 0) {
+                const size_t total_tokens     = ids.size();
+                const size_t tokens_per_batch = total_tokens / bs;
+                const size_t img_tokens       = static_cast<size_t>(h_len) * static_cast<size_t>(w_len);
+                // Track per-token wrap lengths for the row/column axes so only spatial tokens become periodic.
+                axes_wraps.assign(axes_dim.size(), std::vector<int>(total_tokens, 0));
+
+                std::vector<int> ref_h_lens;
+                std::vector<int> ref_w_lens;
+                ref_h_lens.reserve(ref_latents.size());
+                ref_w_lens.reserve(ref_latents.size());
+                std::vector<size_t> ref_token_counts;
+                ref_token_counts.reserve(ref_latents.size());
+                for (ggml_tensor* ref : ref_latents) {
+                    if (ref == nullptr) {
+                        ref_h_lens.push_back(0);
+                        ref_w_lens.push_back(0);
+                        ref_token_counts.push_back(0);
+                        continue;
+                    }
+                    int ref_h      = static_cast<int>(ref->ne[1]);
+                    int ref_w      = static_cast<int>(ref->ne[0]);
+                    int ref_pad_h  = (patch_size - (ref_h % patch_size)) % patch_size;
+                    int ref_pad_w  = (patch_size - (ref_w % patch_size)) % patch_size;
+                    int ref_h_len  = (ref_h + ref_pad_h) / patch_size;
+                    int ref_w_len  = (ref_w + ref_pad_w) / patch_size;
+                    size_t tokens  = static_cast<size_t>(ref_h_len) * static_cast<size_t>(ref_w_len);
+                    ref_h_lens.push_back(ref_h_len);
+                    ref_w_lens.push_back(ref_w_len);
+                    ref_token_counts.push_back(tokens);
+                }
+
+                for (int b = 0; b < bs; ++b) {
+                    size_t batch_offset = static_cast<size_t>(b) * tokens_per_batch;
+                    size_t cursor       = batch_offset;
+
+                    cursor += static_cast<size_t>(context_len);
+
+                    for (size_t idx = 0; idx < img_tokens && (cursor + idx) < total_tokens; ++idx) {
+                        size_t token_index = cursor + idx;
+                        axes_wraps[1][token_index] = h_len;
+                        axes_wraps[2][token_index] = w_len;
+                    }
+                    cursor += img_tokens;
+
+                    for (size_t r = 0; r < ref_latents.size(); ++r) {
+                        size_t ref_tokens = ref_token_counts[r];
+                        int ref_h_len     = ref_h_lens[r];
+                        int ref_w_len     = ref_w_lens[r];
+                        for (size_t idx = 0; idx < ref_tokens && (cursor + idx) < total_tokens; ++idx) {
+                            size_t token_index = cursor + idx;
+                            axes_wraps[1][token_index] = ref_h_len;
+                            axes_wraps[2][token_index] = ref_w_len;
+                        }
+                        cursor += ref_tokens;
+                    }
+                }
+            }
+        }
+        const std::vector<std::vector<int>>* wraps_ptr = axes_wraps.empty() ? nullptr : &axes_wraps;
+        return embed_nd(ids, bs, theta, axes_dim, wraps_ptr);
     }
 
     __STATIC_INLINE__ std::vector<std::vector<float>> gen_vid_ids(int t,
@@ -395,14 +485,15 @@ namespace Rope {
                                                     struct ggml_tensor* mask,
                                                     bool flash_attn,
                                                     float kv_scale        = 1.0f,
-                                                    bool rope_interleaved = true) {
+                                                    bool rope_interleaved = true,
+                                                    bool pad_circular     = false) {
         // q,k,v: [N, L, n_head, d_head]
         // pe: [L, d_head/2, 2, 2]
         // return: [N, L, n_head*d_head]
         q = apply_rope(ctx, q, pe, rope_interleaved);  // [N*n_head, L, d_head]
         k = apply_rope(ctx, k, pe, rope_interleaved);  // [N*n_head, L, d_head]
 
-        auto x = ggml_nn_attention_ext(ctx, backend, q, k, v, v->ne[1], mask, false, true, flash_attn, kv_scale);  // [N, L, n_head*d_head]
+        auto x = ggml_nn_attention_ext(ctx, backend, q, k, v, v->ne[1], mask, false, true, flash_attn, kv_scale, pad_circular);  // [N, L, n_head*d_head]
         return x;
     }
 };  // namespace Rope

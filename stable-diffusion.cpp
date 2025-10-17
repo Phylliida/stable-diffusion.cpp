@@ -115,6 +115,7 @@ public:
     sd_tiling_params_t vae_tiling_params = {false, 0, 0, 0.5f, 0, 0};
     bool offload_params_to_cpu           = false;
     bool stacked_id                      = false;
+    bool use_circular_pad                = false;
 
     bool is_using_v_parameterization     = false;
     bool is_using_edm_v_parameterization = false;
@@ -187,6 +188,7 @@ public:
         taesd_path              = SAFE_STR(sd_ctx_params->taesd_path);
         use_tiny_autoencoder    = taesd_path.size() > 0;
         offload_params_to_cpu   = sd_ctx_params->offload_params_to_cpu;
+        use_circular_pad        = sd_ctx_params->pad_circular;
 
         if (sd_ctx_params->rng_type == STD_DEFAULT_RNG) {
             rng = std::make_shared<STDDefaultRNG>();
@@ -422,6 +424,7 @@ public:
                     clip_vision = std::make_shared<FrozenCLIPVisionEmbedder>(backend,
                                                                              offload_params_to_cpu,
                                                                              model_loader.tensor_storages_types);
+                    clip_vision->set_circular_pad(use_circular_pad);
                     clip_vision->alloc_params_buffer();
                     clip_vision->get_param_tensors(tensors);
                 }
@@ -469,6 +472,13 @@ public:
 
             cond_stage_model->alloc_params_buffer();
             cond_stage_model->get_param_tensors(tensors);
+
+            if (diffusion_model) {
+                diffusion_model->set_circular_pad(use_circular_pad);
+            }
+            if (high_noise_diffusion_model) {
+                high_noise_diffusion_model->set_circular_pad(use_circular_pad);
+            }
 
             diffusion_model->alloc_params_buffer();
             diffusion_model->get_param_tensors(tensors);
@@ -535,6 +545,13 @@ public:
             }
             // first_stage_model->get_param_tensors(tensors, "first_stage_model.");
 
+            if (first_stage_model) {
+                first_stage_model->set_circular_pad(use_circular_pad);
+            }
+            if (tae_first_stage) {
+                tae_first_stage->set_circular_pad(use_circular_pad);
+            }
+
             if (strlen(SAFE_STR(sd_ctx_params->control_net_path)) > 0) {
                 ggml_backend_t controlnet_backend = NULL;
                 if (sd_ctx_params->keep_control_net_on_cpu && !ggml_backend_is_cpu(backend)) {
@@ -551,6 +568,7 @@ public:
                     LOG_INFO("Using Conv2d direct in the control net");
                     control_net->enable_conv2d_direct();
                 }
+                control_net->set_circular_pad(use_circular_pad);
             }
 
             if (strstr(SAFE_STR(sd_ctx_params->photo_maker_path), "v2")) {
@@ -567,6 +585,9 @@ public:
                                                                    model_loader.tensor_storages_types,
                                                                    "pmid",
                                                                    version);
+            }
+            if (pmid_model) {
+                pmid_model->set_circular_pad(use_circular_pad);
             }
             if (strlen(SAFE_STR(sd_ctx_params->photo_maker_path)) > 0) {
                 pmid_lora = std::make_shared<LoraModel>(backend, sd_ctx_params->photo_maker_path, "");
@@ -1820,6 +1841,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->keep_control_net_on_cpu = false;
     sd_ctx_params->keep_vae_on_cpu         = false;
     sd_ctx_params->diffusion_flash_attn    = false;
+    sd_ctx_params->pad_circular            = false;
     sd_ctx_params->chroma_use_dit_mask     = true;
     sd_ctx_params->chroma_use_t5_mask      = false;
     sd_ctx_params->chroma_t5_mask_pad      = 1;
@@ -1860,6 +1882,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "keep_control_net_on_cpu: %s\n"
              "keep_vae_on_cpu: %s\n"
              "diffusion_flash_attn: %s\n"
+             "pad_circular: %s\n"
              "chroma_use_dit_mask: %s\n"
              "chroma_use_t5_mask: %s\n"
              "chroma_t5_mask_pad: %d\n",
@@ -1889,6 +1912,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              BOOL_STR(sd_ctx_params->keep_control_net_on_cpu),
              BOOL_STR(sd_ctx_params->keep_vae_on_cpu),
              BOOL_STR(sd_ctx_params->diffusion_flash_attn),
+             BOOL_STR(sd_ctx_params->pad_circular),
              BOOL_STR(sd_ctx_params->chroma_use_dit_mask),
              BOOL_STR(sd_ctx_params->chroma_use_t5_mask),
              sd_ctx_params->chroma_t5_mask_pad);

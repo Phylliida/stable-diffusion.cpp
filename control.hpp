@@ -387,6 +387,11 @@ struct ControlNet : public GGMLRunner {
         control_net.get_param_tensors(tensors, prefix);
     }
 
+    void set_circular_pad(bool enabled) override {
+        GGMLRunner::set_circular_pad(enabled);
+        control_net.set_circular_pad(enabled);
+    }
+
     struct ggml_cgraph* build_graph(struct ggml_tensor* x,
                                     struct ggml_tensor* hint,
                                     struct ggml_tensor* timesteps,

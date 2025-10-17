@@ -159,7 +159,7 @@ namespace Qwen {
             auto k = ggml_concat(ctx, txt_k, img_k, 2);  // [N, n_txt_token + n_img_token, n_head, d_head]
             auto v = ggml_concat(ctx, txt_v, img_v, 2);  // [N, n_txt_token + n_img_token, n_head, d_head]
 
-            auto attn         = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn, (1.0f / 128.f));  // [N, n_txt_token + n_img_token, n_head*d_head]
+            auto attn         = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn, (1.0f / 128.f), true, use_circular_pad());  // [N, n_txt_token + n_img_token, n_head*d_head]
             attn              = ggml_cont(ctx, ggml_permute(ctx, attn, 0, 2, 1, 3));                           // [n_txt_token + n_img_token, N, hidden_size]
             auto txt_attn_out = ggml_view_3d(ctx,
                                              attn,
@@ -363,7 +363,7 @@ namespace Qwen {
 
             int pad_h = (params.patch_size - H % params.patch_size) % params.patch_size;
             int pad_w = (params.patch_size - W % params.patch_size) % params.patch_size;
-            x         = ggml_pad(ctx, x, pad_w, pad_h, 0, 0);  // [N, C, H + pad_h, W + pad_w]
+            x         = sd_pad(ctx, x, pad_w, pad_h, 0, 0, use_circular_pad());  // [N, C, H + pad_h, W + pad_w]
             return x;
         }
 
@@ -547,6 +547,11 @@ namespace Qwen {
             qwen_image.get_param_tensors(tensors, prefix);
         }
 
+        void set_circular_pad(bool enabled) override {
+            GGMLRunner::set_circular_pad(enabled);
+            qwen_image.set_circular_pad(enabled);
+        }
+
         struct ggml_cgraph* build_graph(struct ggml_tensor* x,
                                         struct ggml_tensor* timesteps,
                                         struct ggml_tensor* context,
@@ -571,7 +576,8 @@ namespace Qwen {
                                                   ref_latents,
                                                   increase_ref_index,
                                                   qwen_image_params.theta,
-                                                  qwen_image_params.axes_dim);
+                                                  qwen_image_params.axes_dim,
+                                                  qwen_image.is_circular_pad_enabled());
             int pos_len = pe_vec.size() / qwen_image_params.axes_dim_sum / 2;
             // LOG_DEBUG("pos_len %d", pos_len);
             auto pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, qwen_image_params.axes_dim_sum / 2, pos_len);

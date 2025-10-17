@@ -445,6 +445,12 @@ public:
             id_encoder2.get_param_tensors(tensors, prefix);
     }
 
+    void set_circular_pad(bool enabled) override {
+        GGMLRunner::set_circular_pad(enabled);
+        id_encoder.set_circular_pad(enabled);
+        id_encoder2.set_circular_pad(enabled);
+    }
+
     struct ggml_cgraph* build_graph(  // struct ggml_allocr* allocr,
         struct ggml_tensor* id_pixel_values,
         struct ggml_tensor* prompt_embeds,

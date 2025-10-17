@@ -222,6 +222,10 @@ struct TinyAutoEncoder : public GGMLRunner {
         return "taesd";
     }
 
+    void set_circular_pad(bool enabled) override {
+        taesd.set_circular_pad(enabled);
+    }
+
     bool load_from_file(const std::string& file_path, int n_threads) {
         LOG_INFO("loading taesd from '%s', decode_only = %s", file_path.c_str(), decode_only ? "true" : "false");
         alloc_params_buffer();

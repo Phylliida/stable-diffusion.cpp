@@ -636,6 +636,11 @@ struct FrozenCLIPVisionEmbedder : public GGMLRunner {
         vision_model.get_param_tensors(tensors, "cond_stage_model.transformer");
     }
 
+    void set_circular_pad(bool enabled) override {
+        GGMLRunner::set_circular_pad(enabled);
+        vision_model.set_circular_pad(enabled);
+    }
+
     struct ggml_cgraph* build_graph(struct ggml_tensor* pixel_values, bool return_pooled, int clip_skip) {
         struct ggml_cgraph* gf = ggml_new_graph(compute_ctx);
 

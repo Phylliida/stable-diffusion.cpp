@@ -611,7 +611,7 @@ public:
 
         k = ggml_scale_inplace(ctx, k, sqrt(d_head));
 
-        x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, mask);  // [N, n_token, d_head * n_head]
+        x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, mask, false, false, false, 1.0f, use_circular_pad());  // [N, n_token, d_head * n_head]
 
         x = out_proj->forward(ctx, x);  // [N, n_token, model_dim]
         return {x, past_bias};

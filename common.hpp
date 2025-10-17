@@ -28,7 +28,7 @@ public:
         if (vae_downsample) {
             auto conv = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
 
-            x = ggml_pad(ctx, x, 1, 1, 0, 0);
+            x = sd_pad(ctx, x, 1, 1, 0, 0, use_circular_pad());
             x = conv->forward(ctx, x);
         } else {
             auto conv = std::dynamic_pointer_cast<Conv2d>(blocks["op"]);
@@ -325,7 +325,7 @@ public:
         auto k = to_k->forward(ctx, context);  // [N, n_context, inner_dim]
         auto v = to_v->forward(ctx, context);  // [N, n_context, inner_dim]
 
-        x = ggml_nn_attention_ext(ctx, backend, q, k, v, n_head, NULL, false, false, flash_attn);  // [N, n_token, inner_dim]
+        x = ggml_nn_attention_ext(ctx, backend, q, k, v, n_head, NULL, false, false, flash_attn, 1.0f, use_circular_pad());  // [N, n_token, inner_dim]
 
         x = to_out_0->forward(ctx, x);  // [N, n_token, query_dim]
         return x;

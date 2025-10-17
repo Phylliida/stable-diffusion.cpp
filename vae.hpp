@@ -124,13 +124,16 @@ public:
              std::pair<int, int> padding  = {0, 0},
              std::pair<int, int> dilation = {1, 1},
              bool bias                    = true)
-        : Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, bias) {
+        : Conv2d(in_channels, out_channels, kernel_size, stride, padding, dilation, bias, true) {
         int64_t kernel_padding  = video_kernel_size / 2;
         blocks["time_mix_conv"] = std::shared_ptr<GGMLBlock>(new Conv3dnx1x1(out_channels,
                                                                              out_channels,
                                                                              video_kernel_size,
                                                                              1,
-                                                                             kernel_padding));
+                                                                             kernel_padding,
+                                                                             1,
+                                                                             true,
+                                                                             true));
     }
 
     struct ggml_tensor* forward(struct ggml_context* ctx,
@@ -531,6 +534,7 @@ struct VAE : public GGMLRunner {
     virtual void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) = 0;
     virtual void enable_conv2d_direct(){};
     virtual void set_conv2d_scale(float scale) { SD_UNUSED(scale); };
+    virtual void set_circular_pad(bool enabled) override { SD_UNUSED(enabled); }
 };
 
 struct AutoEncoderKL : public VAE {
@@ -568,6 +572,10 @@ struct AutoEncoderKL : public VAE {
                 conv_block->set_scale(scale);
             }
         }
+    }
+
+    void set_circular_pad(bool enabled) override {
+        ae.set_circular_pad(enabled);
     }
 
     std::string get_desc() {

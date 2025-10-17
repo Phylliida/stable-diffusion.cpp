@@ -36,6 +36,7 @@ struct DiffusionModel {
     virtual void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors) = 0;
     virtual size_t get_params_buffer_size()                                             = 0;
     virtual int64_t get_adm_in_channels()                                               = 0;
+    virtual void set_circular_pad(bool enabled) { SD_UNUSED(enabled); }
 };
 
 struct UNetModel : public DiffusionModel {
@@ -75,6 +76,10 @@ struct UNetModel : public DiffusionModel {
 
     int64_t get_adm_in_channels() {
         return unet.unet.adm_in_channels;
+    }
+
+    void set_circular_pad(bool enabled) override {
+        unet.set_circular_pad(enabled);
     }
 
     void compute(int n_threads,
@@ -131,6 +136,10 @@ struct MMDiTModel : public DiffusionModel {
         return 768 + 1280;
     }
 
+    void set_circular_pad(bool enabled) override {
+        mmdit.set_circular_pad(enabled);
+    }
+
     void compute(int n_threads,
                  DiffusionParams diffusion_params,
                  struct ggml_tensor** output     = NULL,
@@ -184,6 +193,10 @@ struct FluxModel : public DiffusionModel {
 
     int64_t get_adm_in_channels() {
         return 768;
+    }
+
+    void set_circular_pad(bool enabled) override {
+        flux.set_circular_pad(enabled);
     }
 
     void compute(int n_threads,
@@ -246,6 +259,10 @@ struct WanModel : public DiffusionModel {
         return 768;
     }
 
+    void set_circular_pad(bool enabled) override {
+        wan.set_circular_pad(enabled);
+    }
+
     void compute(int n_threads,
                  DiffusionParams diffusion_params,
                  struct ggml_tensor** output     = NULL,
@@ -303,6 +320,10 @@ struct QwenImageModel : public DiffusionModel {
 
     int64_t get_adm_in_channels() {
         return 768;
+    }
+
+    void set_circular_pad(bool enabled) override {
+        qwen_image.set_circular_pad(enabled);
     }
 
     void compute(int n_threads,

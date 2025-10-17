@@ -570,6 +570,11 @@ struct UNetModelRunner : public GGMLRunner {
         unet.get_param_tensors(tensors, prefix);
     }
 
+    void set_circular_pad(bool enabled) override {
+        GGMLRunner::set_circular_pad(enabled);
+        unet.set_circular_pad(enabled);
+    }
+
     struct ggml_cgraph* build_graph(struct ggml_tensor* x,
                                     struct ggml_tensor* timesteps,
                                     struct ggml_tensor* context,

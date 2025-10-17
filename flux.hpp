@@ -128,8 +128,8 @@ namespace Flux {
             // x: [N, n_token, dim]
             // pe: [n_token, d_head/2, 2, 2]
             // return [N, n_token, dim]
-            auto qkv = pre_attention(ctx, x);                                                        // q,k,v: [N, n_token, n_head, d_head]
-            x        = Rope::attention(ctx, backend, qkv[0], qkv[1], qkv[2], pe, mask, flash_attn);  // [N, n_token, dim]
+            auto qkv = pre_attention(ctx, x);  // q,k,v: [N, n_token, n_head, d_head]
+            x        = Rope::attention(ctx, backend, qkv[0], qkv[1], qkv[2], pe, mask, flash_attn, 1.0f, true, use_circular_pad());  // [N, n_token, dim]
             x        = post_attention(ctx, x);                                                       // [N, n_token, dim]
             return x;
         }
@@ -318,7 +318,7 @@ namespace Flux {
             auto k = ggml_concat(ctx, txt_k, img_k, 2);  // [N, n_txt_token + n_img_token, n_head, d_head]
             auto v = ggml_concat(ctx, txt_v, img_v, 2);  // [N, n_txt_token + n_img_token, n_head, d_head]
 
-            auto attn         = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn);  // [N, n_txt_token + n_img_token, n_head*d_head]
+            auto attn         = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn, 1.0f, true, use_circular_pad());  // [N, n_txt_token + n_img_token, n_head*d_head]
             attn              = ggml_cont(ctx, ggml_permute(ctx, attn, 0, 2, 1, 3));           // [n_txt_token + n_img_token, N, hidden_size]
             auto txt_attn_out = ggml_view_3d(ctx,
                                              attn,
@@ -453,7 +453,7 @@ namespace Flux {
             auto v           = ggml_reshape_4d(ctx, qkv_vec[2], head_dim, num_heads, qkv_vec[2]->ne[1], qkv_vec[2]->ne[2]);  // [N, n_token, n_head, d_head]
             q                = norm->query_norm(ctx, q);
             k                = norm->key_norm(ctx, k);
-            auto attn        = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn);  // [N, n_token, hidden_size]
+            auto attn        = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn, 1.0f, true, use_circular_pad());  // [N, n_token, hidden_size]
 
             auto attn_mlp = ggml_concat(ctx, attn, ggml_gelu_inplace(ctx, mlp), 0);  // [N, n_token, hidden_size + mlp_hidden_dim]
             auto output   = linear2->forward(ctx, attn_mlp);                         // [N, n_token, hidden_size]
@@ -696,7 +696,7 @@ namespace Flux {
                 vec = approx->forward(ctx, vec);                           // [344, N, hidden_size]
 
                 if (y != NULL) {
-                    txt_img_mask = ggml_pad(ctx, y, img->ne[1], 0, 0, 0);
+                    txt_img_mask = sd_pad(ctx, y, img->ne[1], 0, 0, 0, use_circular_pad());
                 }
             } else {
                 auto time_in   = std::dynamic_pointer_cast<MLPEmbedder>(blocks["time_in"]);
@@ -759,7 +759,7 @@ namespace Flux {
             int64_t patch_size = 2;
             int pad_h          = (patch_size - H % patch_size) % patch_size;
             int pad_w          = (patch_size - W % patch_size) % patch_size;
-            x                  = ggml_pad(ctx, x, pad_w, pad_h, 0, 0);  // [N, C, H + pad_h, W + pad_w]
+            x                  = sd_pad(ctx, x, pad_w, pad_h, 0, 0, use_circular_pad());  // [N, C, H + pad_h, W + pad_w]
 
             // img = rearrange(x, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch_size, pw=patch_size)
             auto img = patchify(ctx, x, patch_size);  // [N, h*w, C * patch_size * patch_size]
@@ -815,9 +815,9 @@ namespace Flux {
                 ggml_tensor* mask    = ggml_view_4d(ctx, c_concat, c_concat->ne[0], c_concat->ne[1], 1, 1, c_concat->nb[1], c_concat->nb[2], c_concat->nb[3], c_concat->nb[2] * C);
                 ggml_tensor* control = ggml_view_4d(ctx, c_concat, c_concat->ne[0], c_concat->ne[1], C, 1, c_concat->nb[1], c_concat->nb[2], c_concat->nb[3], c_concat->nb[2] * (C + 1));
 
-                masked  = ggml_pad(ctx, masked, pad_w, pad_h, 0, 0);
-                mask    = ggml_pad(ctx, mask, pad_w, pad_h, 0, 0);
-                control = ggml_pad(ctx, control, pad_w, pad_h, 0, 0);
+                masked  = sd_pad(ctx, masked, pad_w, pad_h, 0, 0, use_circular_pad());
+                mask    = sd_pad(ctx, mask, pad_w, pad_h, 0, 0, use_circular_pad());
+                control = sd_pad(ctx, control, pad_w, pad_h, 0, 0, use_circular_pad());
 
                 masked  = patchify(ctx, masked, patch_size);
                 mask    = patchify(ctx, mask, patch_size);
@@ -827,7 +827,7 @@ namespace Flux {
             } else if (params.version == VERSION_FLUX_CONTROLS) {
                 GGML_ASSERT(c_concat != NULL);
 
-                ggml_tensor* control = ggml_pad(ctx, c_concat, pad_w, pad_h, 0, 0);
+                ggml_tensor* control = sd_pad(ctx, c_concat, pad_w, pad_h, 0, 0, use_circular_pad());
                 control              = patchify(ctx, control, patch_size);
                 img                  = ggml_concat(ctx, img, control, 0);
             }
@@ -925,18 +925,23 @@ namespace Flux {
         }
 
         std::string get_desc() {
-            return "flux";
-        }
+        return "flux";
+    }
 
-        void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
-            flux.get_param_tensors(tensors, prefix);
-        }
+    void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
+        flux.get_param_tensors(tensors, prefix);
+    }
 
-        struct ggml_cgraph* build_graph(struct ggml_tensor* x,
-                                        struct ggml_tensor* timesteps,
-                                        struct ggml_tensor* context,
-                                        struct ggml_tensor* c_concat,
-                                        struct ggml_tensor* y,
+    void set_circular_pad(bool enabled) override {
+        GGMLRunner::set_circular_pad(enabled);
+        flux.set_circular_pad(enabled);
+    }
+
+    struct ggml_cgraph* build_graph(struct ggml_tensor* x,
+                                    struct ggml_tensor* timesteps,
+                                    struct ggml_tensor* context,
+                                    struct ggml_tensor* c_concat,
+                                    struct ggml_tensor* y,
                                         struct ggml_tensor* guidance,
                                         std::vector<ggml_tensor*> ref_latents = {},
                                         bool increase_ref_index               = false,

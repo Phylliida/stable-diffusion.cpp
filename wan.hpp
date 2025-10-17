@@ -73,7 +73,7 @@ namespace WAN {
                 lp2 -= (int)cache_x->ne[2];
             }
 
-            x = ggml_pad_ext(ctx, x, lp0, rp0, lp1, rp1, lp2, rp2, 0, 0);
+            x = sd_pad_ext(ctx, x, lp0, rp0, lp1, rp1, lp2, rp2, 0, 0, use_circular_pad());
             return ggml_nn_conv_3d(ctx, x, w, b, in_channels,
                                    std::get<2>(stride), std::get<1>(stride), std::get<0>(stride),
                                    0, 0, 0,
@@ -172,7 +172,7 @@ namespace WAN {
                                                   2);
                         }
                         if (chunk_idx == 1 && cache_x->ne[2] < 2) {  // Rep
-                            cache_x = ggml_pad_ext(ctx, cache_x, 0, 0, 0, 0, (int)cache_x->ne[2], 0, 0, 0);
+                            cache_x = sd_pad_ext(ctx, cache_x, 0, 0, 0, 0, (int)cache_x->ne[2], 0, 0, 0, use_circular_pad());
                             // aka cache_x = torch.cat([torch.zeros_like(cache_x).to(cache_x.device),cache_x],dim=2)
                         }
                         if (chunk_idx == 1) {
@@ -198,9 +198,9 @@ namespace WAN {
                 } else if (mode == "upsample3d") {
                     x = ggml_upscale(ctx, x, 2, GGML_SCALE_MODE_NEAREST);
                 } else if (mode == "downsample2d") {
-                    x = ggml_pad(ctx, x, 1, 1, 0, 0);
+                    x = sd_pad(ctx, x, 1, 1, 0, 0, use_circular_pad());
                 } else if (mode == "downsample3d") {
-                    x = ggml_pad(ctx, x, 1, 1, 0, 0);
+                    x = sd_pad(ctx, x, 1, 1, 0, 0, use_circular_pad());
                 }
                 x = resample_1->forward(ctx, x);
                 x = ggml_nn_cont(ctx, ggml_torch_permute(ctx, x, 0, 1, 3, 2));  // (c, t, h, w)
@@ -260,7 +260,7 @@ namespace WAN {
 
             int64_t pad_t = (factor_t - T % factor_t) % factor_t;
 
-            x = ggml_pad_ext(ctx, x, 0, 0, 0, 0, pad_t, 0, 0, 0);
+            x = sd_pad_ext(ctx, x, 0, 0, 0, 0, pad_t, 0, 0, 0, use_circular_pad());
             T = x->ne[2];
 
             x = ggml_reshape_4d(ctx, x, W * H, factor_t, T / factor_t, C);                                                  // [C, T/factor_t, factor_t, H*W]
@@ -1120,6 +1120,10 @@ namespace WAN {
             return "wan_vae";
         }
 
+        void set_circular_pad(bool enabled) override {
+            ae.set_circular_pad(enabled);
+        }
+
         void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
             ae.get_param_tensors(tensors, prefix);
         }
@@ -1333,7 +1337,7 @@ namespace WAN {
             k = ggml_reshape_4d(ctx, k, head_dim, num_heads, n_token, N);  // [N, n_token, n_head, d_head]
             v = ggml_reshape_4d(ctx, v, head_dim, num_heads, n_token, N);  // [N, n_token, n_head, d_head]
 
-            x = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn);  // [N, n_token, dim]
+            x = Rope::attention(ctx, backend, q, k, v, pe, mask, flash_attn, 1.0f, true, use_circular_pad());  // [N, n_token, dim]
 
             x = o_proj->forward(ctx, x);  // [N, n_token, dim]
             return x;
@@ -1388,7 +1392,7 @@ namespace WAN {
             k      = norm_k->forward(ctx, k);
             auto v = v_proj->forward(ctx, context);  // [N, n_context, dim]
 
-            x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, NULL, false, false, flash_attn);  // [N, n_token, dim]
+            x = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, NULL, false, false, flash_attn, 1.0f, use_circular_pad());  // [N, n_token, dim]
 
             x = o_proj->forward(ctx, x);  // [N, n_token, dim]
             return x;
@@ -1455,8 +1459,8 @@ namespace WAN {
             k_img      = norm_k_img->forward(ctx, k_img);
             auto v_img = v_img_proj->forward(ctx, context_img);  // [N, context_img_len, dim]
 
-            auto img_x = ggml_nn_attention_ext(ctx, backend, q, k_img, v_img, num_heads, NULL, false, false, flash_attn);  // [N, n_token, dim]
-            x          = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, NULL, false, false, flash_attn);          // [N, n_token, dim]
+            auto img_x = ggml_nn_attention_ext(ctx, backend, q, k_img, v_img, num_heads, NULL, false, false, flash_attn, 1.0f, use_circular_pad());  // [N, n_token, dim]
+            x          = ggml_nn_attention_ext(ctx, backend, q, k, v, num_heads, NULL, false, false, flash_attn, 1.0f, use_circular_pad());          // [N, n_token, dim]
 
             x = ggml_add(ctx, x, img_x);
 
@@ -1838,7 +1842,7 @@ namespace WAN {
             int pad_t = (std::get<0>(params.patch_size) - T % std::get<0>(params.patch_size)) % std::get<0>(params.patch_size);
             int pad_h = (std::get<1>(params.patch_size) - H % std::get<1>(params.patch_size)) % std::get<1>(params.patch_size);
             int pad_w = (std::get<2>(params.patch_size) - W % std::get<2>(params.patch_size)) % std::get<2>(params.patch_size);
-            x         = ggml_pad(ctx, x, pad_w, pad_h, pad_t, 0);  // [N*C, T + pad_t, H + pad_h, W + pad_w]
+            x         = sd_pad(ctx, x, pad_w, pad_h, pad_t, 0, use_circular_pad());  // [N*C, T + pad_t, H + pad_h, W + pad_w]
 
             return x;
         }
@@ -2140,6 +2144,11 @@ namespace WAN {
 
         void get_param_tensors(std::map<std::string, struct ggml_tensor*>& tensors, const std::string prefix) {
             wan.get_param_tensors(tensors, prefix);
+        }
+
+        void set_circular_pad(bool enabled) override {
+            GGMLRunner::set_circular_pad(enabled);
+            wan.set_circular_pad(enabled);
         }
 
         struct ggml_cgraph* build_graph(struct ggml_tensor* x,

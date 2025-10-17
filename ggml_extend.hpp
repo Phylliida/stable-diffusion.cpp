@@ -23,6 +23,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
+#include "ggml/src/ggml-impl.h"
 #include "ggml.h"
 
 #include "model.h"
@@ -60,23 +61,36 @@
 #define SD_UNUSED(x) (void)(x)
 #endif
 
-__STATIC_INLINE__ void ggml_log_callback_default(ggml_log_level level, const char* text, void*) {
-    switch (level) {
-        case GGML_LOG_LEVEL_DEBUG:
-            LOG_DEBUG(text);
-            break;
-        case GGML_LOG_LEVEL_INFO:
-            LOG_INFO(text);
-            break;
-        case GGML_LOG_LEVEL_WARN:
-            LOG_WARN(text);
-            break;
-        case GGML_LOG_LEVEL_ERROR:
-            LOG_ERROR(text);
-            break;
-        default:
-            LOG_DEBUG(text);
+__STATIC_INLINE__ struct ggml_tensor* sd_pad(struct ggml_context* ctx,
+                                             struct ggml_tensor* a,
+                                             int p0,
+                                             int p1,
+                                             int p2,
+                                             int p3,
+                                             bool circular = false) {
+    struct ggml_tensor* result = ggml_pad(ctx, a, p0, p1, p2, p3);
+    if (circular) {
+        ggml_set_pad_mode(result, GGML_PAD_MODE_CIRCULAR);
     }
+    return result;
+}
+
+__STATIC_INLINE__ struct ggml_tensor* sd_pad_ext(struct ggml_context* ctx,
+                                                 struct ggml_tensor* a,
+                                                 int lp0,
+                                                 int rp0,
+                                                 int lp1,
+                                                 int rp1,
+                                                 int lp2,
+                                                 int rp2,
+                                                 int lp3,
+                                                 int rp3,
+                                                 bool circular = false) {
+    struct ggml_tensor* result = ggml_pad_ext(ctx, a, lp0, rp0, lp1, rp1, lp2, rp2, lp3, rp3);
+    if (circular) {
+        ggml_set_pad_mode(result, GGML_PAD_MODE_CIRCULAR);
+    }
+    return result;
 }
 
 static_assert(GGML_MAX_NAME >= 128, "GGML_MAX_NAME must be at least 128");
@@ -982,7 +996,8 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_conv_2d(struct ggml_context* ctx,
                                                       int d0      = 1,
                                                       int d1      = 1,
                                                       bool direct = false,
-                                                      float scale = 1.f) {
+                                                      float scale = 1.f,
+                                                      bool circular = false) {
     if (scale != 1.f) {
         x = ggml_scale(ctx, x, scale);
     }
@@ -991,6 +1006,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_conv_2d(struct ggml_context* ctx,
     } else {
         x = ggml_conv_2d(ctx, w, x, s0, s1, p0, p1, d0, d1);
     }
+    ggml_set_op_params_i32(x, 6, circular ? 1 : 0);
     if (scale != 1.f) {
         x = ggml_scale(ctx, x, 1.f / scale);
     }
@@ -1150,7 +1166,8 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
                                                             bool diag_mask_inf       = false,
                                                             bool skip_reshape        = false,
                                                             bool flash_attn          = false,  // avoid overflow
-                                                            float kv_scale           = 1.0f) {
+                                                            float kv_scale           = 1.0f,
+                                                            bool pad_circular        = false) {
     int64_t L_q;
     int64_t L_k;
     int64_t C;
@@ -1190,7 +1207,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
 
     auto build_kqv = [&](ggml_tensor* q_in, ggml_tensor* k_in, ggml_tensor* v_in, ggml_tensor* mask_in) -> ggml_tensor* {
         if (kv_pad != 0) {
-            k_in = ggml_pad(ctx, k_in, 0, kv_pad, 0, 0);
+            k_in = sd_pad(ctx, k_in, 0, kv_pad, 0, 0, pad_circular);
         }
         if (kv_scale != 1.0f) {
             k_in = ggml_scale(ctx, k_in, kv_scale);
@@ -1200,7 +1217,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
         v_in = ggml_nn_cont(ctx, ggml_permute(ctx, v_in, 0, 2, 1, 3));
         v_in = ggml_reshape_3d(ctx, v_in, d_head, L_k, n_kv_head * N);
         if (kv_pad != 0) {
-            v_in = ggml_pad(ctx, v_in, 0, kv_pad, 0, 0);
+            v_in = sd_pad(ctx, v_in, 0, kv_pad, 0, 0, pad_circular);
         }
         if (kv_scale != 1.0f) {
             v_in = ggml_scale(ctx, v_in, kv_scale);
@@ -1223,7 +1240,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_nn_attention_ext(struct ggml_context*
                 mask_pad = GGML_PAD(L_q, GGML_KQ_MASK_PAD) - mask_in->ne[1];
             }
             if (mask_pad > 0) {
-                mask_in = ggml_pad(ctx, mask_in, 0, mask_pad, 0, 0);
+                mask_in = sd_pad(ctx, mask_in, 0, mask_pad, 0, 0, pad_circular);
             }
             mask_in = ggml_cast(ctx, mask_in, GGML_TYPE_F16);
         }
@@ -1715,6 +1732,10 @@ protected:
 public:
     virtual std::string get_desc() = 0;
 
+    virtual void set_circular_pad(bool enabled) {
+        SD_UNUSED(enabled);
+    }
+
     GGMLRunner(ggml_backend_t backend, bool offload_params_to_cpu = false)
         : runtime_backend(backend) {
         alloc_params_ctx();
@@ -1864,6 +1885,7 @@ protected:
     typedef std::unordered_map<std::string, std::shared_ptr<GGMLBlock>> GGMLBlockMap;
     GGMLBlockMap blocks;
     ParameterMap params;
+    bool pad_circular_ = false;
 
     ggml_type get_type(const std::string& name, const String2GGMLType& tensor_types, ggml_type default_type) {
         auto iter = tensor_types.find(name);
@@ -1935,6 +1957,24 @@ public:
         return "GGMLBlock";
     }
 
+    virtual void set_circular_pad(bool enabled) {
+        pad_circular_ = enabled;
+        for (auto& block_iter : blocks) {
+            if (block_iter.second) {
+                block_iter.second->set_circular_pad(enabled);
+            }
+        }
+    }
+
+    bool use_circular_pad() const {
+        return pad_circular_;
+    }
+
+    bool is_circular_pad_enabled() const {
+        return pad_circular_;
+    }
+
+public:
     void get_all_blocks(std::vector<GGMLBlock*>& result) {
         result.push_back(this);
         for (auto& block_iter : blocks) {
@@ -2075,14 +2115,17 @@ public:
            std::pair<int, int> stride   = {1, 1},
            std::pair<int, int> padding  = {0, 0},
            std::pair<int, int> dilation = {1, 1},
-           bool bias                    = true)
+           bool bias                    = true,
+           bool circular_pad            = false)
         : in_channels(in_channels),
           out_channels(out_channels),
           kernel_size(kernel_size),
           stride(stride),
           padding(padding),
           dilation(dilation),
-          bias(bias) {}
+          bias(bias) {
+        set_circular_pad(circular_pad);
+    }
 
     void enable_direct() {
         direct = true;
@@ -2102,18 +2145,38 @@ public:
         if (bias) {
             b = params["bias"];
         }
-        return ggml_nn_conv_2d(ctx,
+        struct ggml_tensor* input = x;
+        const int pad_w           = padding.second;
+        const int pad_h           = padding.first;
+        const bool circular = use_circular_pad();
+        if (circular && (pad_w != 0 || pad_h != 0)) {
+            input = sd_pad_ext(ctx,
                                x,
+                               pad_w,
+                               pad_w,
+                               pad_h,
+                               pad_h,
+                               0,
+                               0,
+                               0,
+                               0,
+                               circular);
+        }
+        const int conv_pad_w = circular ? 0 : pad_w;
+        const int conv_pad_h = circular ? 0 : pad_h;
+        return ggml_nn_conv_2d(ctx,
+                               input,
                                w,
                                b,
                                stride.second,
                                stride.first,
-                               padding.second,
-                               padding.first,
+                               conv_pad_w,
+                               conv_pad_h,
                                dilation.second,
                                dilation.first,
                                direct,
-                               scale);
+                               scale,
+                               use_circular_pad());
     }
 };
 
@@ -2140,17 +2203,20 @@ public:
     Conv3dnx1x1(int64_t in_channels,
                 int64_t out_channels,
                 int64_t kernel_size,
-                int64_t stride   = 1,
-                int64_t padding  = 0,
-                int64_t dilation = 1,
-                bool bias        = true)
+                int64_t stride       = 1,
+                int64_t padding      = 0,
+                int64_t dilation     = 1,
+                bool bias            = true,
+                bool circular_pad    = false)
         : in_channels(in_channels),
           out_channels(out_channels),
           kernel_size(kernel_size),
           stride(stride),
           padding(padding),
           dilation(dilation),
-          bias(bias) {}
+          bias(bias) {
+        set_circular_pad(circular_pad);
+    }
 
     // x: [N, IC, ID, IH*IW]
     // result: [N, OC, OD, OH*OW]
@@ -2160,7 +2226,23 @@ public:
         if (bias) {
             b = params["bias"];
         }
-        return ggml_nn_conv_3d_nx1x1(ctx, x, w, b, stride, padding, dilation);
+        struct ggml_tensor* input = x;
+        const bool circular       = use_circular_pad();
+        if (circular && padding != 0) {
+            input = sd_pad_ext(ctx,
+                               x,
+                               0,
+                               0,
+                               0,
+                               0,
+                               padding,
+                               padding,
+                               0,
+                               0,
+                               circular);
+        }
+        const int conv_pad = circular ? 0 : padding;
+        return ggml_nn_conv_3d_nx1x1(ctx, input, w, b, stride, conv_pad, dilation);
     }
 };
 
@@ -2209,9 +2291,30 @@ public:
         if (bias) {
             b = params["bias"];
         }
-        return ggml_nn_conv_3d(ctx, x, w, b, in_channels,
+        struct ggml_tensor* input = x;
+        const int pad_d           = std::get<2>(padding);
+        const int pad_h           = std::get<1>(padding);
+        const int pad_w           = std::get<0>(padding);
+        const bool circular       = use_circular_pad();
+        if (circular && (pad_w != 0 || pad_h != 0 || pad_d != 0)) {
+            input = sd_pad_ext(ctx,
+                               x,
+                               pad_w,
+                               pad_w,
+                               pad_h,
+                               pad_h,
+                               pad_d,
+                               pad_d,
+                               0,
+                               0,
+                               circular);
+        }
+        const int conv_pad_w = circular ? 0 : pad_w;
+        const int conv_pad_h = circular ? 0 : pad_h;
+        const int conv_pad_d = circular ? 0 : pad_d;
+        return ggml_nn_conv_3d(ctx, input, w, b, in_channels,
                                std::get<2>(stride), std::get<1>(stride), std::get<0>(stride),
-                               std::get<2>(padding), std::get<1>(padding), std::get<0>(padding),
+                               conv_pad_d, conv_pad_h, conv_pad_w,
                                std::get<2>(dilation), std::get<1>(dilation), std::get<0>(dilation));
     }
 };
@@ -2369,7 +2472,7 @@ public:
         struct ggml_tensor* k = k_proj->forward(ctx, x);
         struct ggml_tensor* v = v_proj->forward(ctx, x);
 
-        x = ggml_nn_attention_ext(ctx, backend, q, k, v, n_head, NULL, mask);  // [N, n_token, embed_dim]
+        x = ggml_nn_attention_ext(ctx, backend, q, k, v, n_head, NULL, mask, false, false, 1.0f, use_circular_pad());  // [N, n_token, embed_dim]
 
         x = out_proj->forward(ctx, x);  // [N, n_token, embed_dim]
         return x;
